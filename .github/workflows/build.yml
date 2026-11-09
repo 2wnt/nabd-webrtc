@@ -1,0 +1,96 @@
+name: build-webrtc
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "WebRTC branch-heads number (Chrome stable)"
+        default: "8103"
+        required: true
+      arch:
+        description: "Android ABIs (space separated)"
+        default: "arm64-v8a"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      BRANCH: ${{ inputs.branch }}
+      ARCH: ${{ inputs.arch }}
+    steps:
+      - name: Install depot_tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
+          echo "$HOME/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Configure checkout
+        run: |
+          mkdir -p "$HOME/webrtc" && cd "$HOME/webrtc"
+          cat > .gclient <<'EOF'
+          solutions = [{
+            "name": "src",
+            "url": "https://webrtc.googlesource.com/src.git",
+            "deps_file": "DEPS",
+            "managed": False,
+            "custom_deps": {},
+          }]
+          target_os = ["android"]
+          EOF
+          cat .gclient
+
+      - name: Sync source (branch-heads/${{ inputs.branch }})
+        run: |
+          cd "$HOME/webrtc"
+          gclient sync --nohooks --no-history --with_branch_heads \
+            --revision "src@refs/branch-heads/$BRANCH"
+          git -C src log -1 --format='%H %cd %s' | tee "$HOME/commit.txt"
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          cd "$HOME/webrtc/src"
+          sudo ./build/install-build-deps.sh --android --no-prompt || echo "install-build-deps returned non-zero"
+
+      - name: Run hooks
+        run: |
+          cd "$HOME/webrtc"
+          gclient runhooks
+          df -h /
+
+      - name: Build AAR
+        run: |
+          cd "$HOME/webrtc/src"
+          vpython3 tools_webrtc/android/build_aar.py \
+            --arch $ARCH \
+            --output "$HOME/libwebrtc.aar"
+          ls -la "$HOME/libwebrtc.aar"
+
+      - name: Report
+        run: |
+          cd "$HOME"
+          sha256sum libwebrtc.aar | tee SHA256SUMS
+          COMMIT=$(cut -d' ' -f1 commit.txt)
+          {
+            echo "WebRTC branch-heads/$BRANCH"
+            echo "Commit: $(cat commit.txt)"
+            echo "ABIs: $ARCH"
+            echo "SHA256: $(cut -d' ' -f1 SHA256SUMS)"
+            echo "Size: $(stat -c %s libwebrtc.aar) bytes"
+            echo "Runner: $(lsb_release -ds), $(nproc) CPUs"
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > notes.txt
+          cat notes.txt
+          echo "TAG=webrtc-$BRANCH-${COMMIT:0:10}-run$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$HOME"
+          gh release create "$TAG" libwebrtc.aar SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.txt --prerelease
