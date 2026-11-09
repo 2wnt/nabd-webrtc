@@ -23,6 +23,10 @@ jobs:
       BRANCH: ${{ inputs.branch }}
       ARCH: ${{ inputs.arch }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: nabd
+
       - name: Install depot_tools
         run: |
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
@@ -62,6 +66,9 @@ jobs:
           gclient runhooks
           df -h /
 
+      - name: Ship jni_zero classes in the AAR (patch)
+        run: python3 "$GITHUB_WORKSPACE/nabd/tools/patch_jni_zero_aar.py" "$HOME/webrtc/src"
+
       - name: Build AAR
         run: |
           cd "$HOME/webrtc/src"
@@ -69,6 +76,9 @@ jobs:
             --arch $ARCH \
             --output "$HOME/libwebrtc.aar"
           ls -la "$HOME/libwebrtc.aar"
+
+      - name: Check AAR has every class it references
+        run: bash "$GITHUB_WORKSPACE/nabd/tools/check_aar.sh" "$HOME/libwebrtc.aar"
 
       - name: Report
         run: |
